@@ -27,7 +27,7 @@ class ProviderTest extends TestCase
         Cache::flush();
     }
 
-    public function test_redirect_uses_telegram_oidc_authorize_endpoint_with_pkce(): void
+    public function testRedirectUsesTelegramOidcAuthorizeEndpointWithPkce(): void
     {
         $provider = $this->provider($this->requestWithSession(), scopes: 'profile telegram:bot_access');
 
@@ -45,7 +45,7 @@ class ProviderTest extends TestCase
         $this->assertSame('openid profile telegram:bot_access', $query['scope']);
     }
 
-    public function test_provider_validates_id_token_and_maps_numeric_telegram_id(): void
+    public function testProviderValidatesIdTokenAndMapsNumericTelegramId(): void
     {
         $request = $this->requestWithSession([
             'code' => 'authorization-code',
@@ -107,7 +107,7 @@ class ProviderTest extends TestCase
     }
 
     /**
-     * @param  array<string, string>  $query
+     * @param array<string, string> $query
      */
     private function requestWithSession(array $query = []): Request
     {
@@ -137,8 +137,8 @@ class ProviderTest extends TestCase
     }
 
     /**
-     * @param  list<Response>  $responses
-     * @param  array<int, array<string, mixed>>  $history
+     * @param list<Response>                   $responses
+     * @param array<int, array<string, mixed>> $history
      */
     private function httpClient(array $responses, array &$history): Client
     {

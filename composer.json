@@ -1,5 +1,5 @@
 {
-    "name": "barzhahub/socialiteproviders-telegram-oidc",
+    "name": "socialiteproviders/telegram-oidc",
     "description": "Telegram OpenID Connect Provider for Laravel Socialite",
     "type": "library",
     "license": "MIT",

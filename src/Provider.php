@@ -9,13 +9,9 @@ use Firebase\JWT\JWT;
 use GuzzleHttp\RequestOptions;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Cache;
-use JsonException;
 use Laravel\Socialite\Two\InvalidStateException;
-use RuntimeException;
 use SocialiteProviders\Manager\OAuth2\AbstractProvider;
 use SocialiteProviders\Manager\OAuth2\User;
-use stdClass;
-use UnexpectedValueException;
 
 class Provider extends AbstractProvider
 {
@@ -39,17 +35,11 @@ class Provider extends AbstractProvider
 
     protected $scopes = ['openid', 'profile'];
 
-    /**
-     * {@inheritdoc}
-     */
     public static function additionalConfigKeys(): array
     {
         return ['scopes'];
     }
 
-    /**
-     * {@inheritdoc}
-     */
     public function user()
     {
         if ($this->user) {
@@ -57,11 +47,11 @@ class Provider extends AbstractProvider
         }
 
         if ($this->request->filled('error')) {
-            throw new RuntimeException((string) ($this->request->input('error_description') ?: $this->request->input('error')));
+            throw new \RuntimeException((string) ($this->request->input('error_description') ?: $this->request->input('error')));
         }
 
         if ($this->hasInvalidState()) {
-            throw new InvalidStateException;
+            throw new InvalidStateException();
         }
 
         $response = $this->getAccessTokenResponse($this->getCode());
@@ -76,9 +66,6 @@ class Provider extends AbstractProvider
             ->setApprovedScopes($this->parseApprovedScopes($response));
     }
 
-    /**
-     * {@inheritdoc}
-     */
     public function getScopes()
     {
         $configured = $this->config['scopes'] ?? null;
@@ -93,55 +80,50 @@ class Provider extends AbstractProvider
 
         $scopes = array_values(array_unique(array_filter(
             $scopes,
-            static fn ($scope) => is_string($scope) && $scope !== ''
+            static fn ($scope) => is_string($scope) && '' !== $scope
         )));
 
-        if (! in_array('openid', $scopes, true)) {
+        if (!in_array('openid', $scopes, true)) {
             array_unshift($scopes, 'openid');
         }
 
         return $scopes;
     }
 
-    /**
-     * {@inheritdoc}
-     */
     protected function getAuthUrl($state)
     {
         return $this->buildAuthUrlFromBase(self::AUTHORIZATION_ENDPOINT, $state);
     }
 
-    /**
-     * {@inheritdoc}
-     */
     protected function getTokenUrl()
     {
         return self::TOKEN_ENDPOINT;
     }
 
     /**
-     * Telegram OIDC returns user claims in id_token and does not expose a UserInfo endpoint.
+     * Telegram OIDC returns all user claims inside id_token and does not expose a separate
+     * UserInfo endpoint. This method is never reached because user() is fully overridden.
      *
-     * @param  string  $token
+     * @param string $token
+     *
      * @return array<string, mixed>
+     *
+     * @throws \RuntimeException always
      */
     protected function getUserByToken($token): array
     {
-        throw new RuntimeException('Telegram OIDC does not provide a UserInfo endpoint.');
+        throw new \RuntimeException('Telegram OIDC does not provide a UserInfo endpoint.');
     }
 
-    /**
-     * {@inheritdoc}
-     */
     protected function mapUserToObject(array $user)
     {
         $providerId = Arr::get($user, 'id', Arr::get($user, 'sub'));
 
-        if (! is_int($providerId) && ! is_string($providerId)) {
-            throw new UnexpectedValueException('Telegram OIDC token does not contain a valid user identifier.');
+        if (!is_int($providerId) && !is_string($providerId)) {
+            throw new \UnexpectedValueException('Telegram OIDC token does not contain a valid user identifier.');
         }
 
-        return (new User)->setRaw($user)->map([
+        return (new User())->setRaw($user)->map([
             'id' => (string) $providerId,
             'nickname' => Arr::get($user, 'preferred_username'),
             'name' => Arr::get($user, 'name'),
@@ -150,9 +132,6 @@ class Provider extends AbstractProvider
         ]);
     }
 
-    /**
-     * {@inheritdoc}
-     */
     protected function getTokenHeaders($code)
     {
         return [
@@ -161,15 +140,12 @@ class Provider extends AbstractProvider
         ];
     }
 
-    /**
-     * {@inheritdoc}
-     */
     protected function getTokenFields($code)
     {
         $codeVerifier = $this->request->session()->pull('code_verifier');
 
-        if (! is_string($codeVerifier) || $codeVerifier === '') {
-            throw new InvalidStateException;
+        if (!is_string($codeVerifier) || '' === $codeVerifier) {
+            throw new InvalidStateException();
         }
 
         return [
@@ -186,11 +162,11 @@ class Provider extends AbstractProvider
      */
     private function validateIdToken(string $idToken): array
     {
-        if ($idToken === '') {
-            throw new UnexpectedValueException('Telegram OIDC token response does not contain id_token.');
+        if ('' === $idToken) {
+            throw new \UnexpectedValueException('Telegram OIDC token response does not contain id_token.');
         }
 
-        $headers = new stdClass;
+        $headers = new \stdClass();
         $previousLeeway = JWT::$leeway;
         JWT::$leeway = 60;
 
@@ -201,25 +177,25 @@ class Provider extends AbstractProvider
         }
 
         if (($headers->alg ?? null) !== 'RS256') {
-            throw new UnexpectedValueException('Telegram OIDC token uses an unsupported signing algorithm.');
+            throw new \UnexpectedValueException('Telegram OIDC token uses an unsupported signing algorithm.');
         }
 
         $claims = $this->objectToArray($payload);
 
         if (($claims['iss'] ?? null) !== self::ISSUER) {
-            throw new UnexpectedValueException('Telegram OIDC issuer mismatch.');
+            throw new \UnexpectedValueException('Telegram OIDC issuer mismatch.');
         }
 
-        if (! $this->audienceMatches($claims['aud'] ?? null)) {
-            throw new UnexpectedValueException('Telegram OIDC audience mismatch.');
+        if (!$this->audienceMatches($claims['aud'] ?? null)) {
+            throw new \UnexpectedValueException('Telegram OIDC audience mismatch.');
         }
 
-        if (empty($claims['exp']) || ! is_numeric($claims['exp'])) {
-            throw new UnexpectedValueException('Telegram OIDC token does not contain exp.');
+        if (empty($claims['exp']) || !is_numeric($claims['exp'])) {
+            throw new \UnexpectedValueException('Telegram OIDC token does not contain exp.');
         }
 
         if (empty($claims['sub']) && empty($claims['id'])) {
-            throw new UnexpectedValueException('Telegram OIDC token does not contain a user identifier.');
+            throw new \UnexpectedValueException('Telegram OIDC token does not contain a user identifier.');
         }
 
         return $claims;
@@ -237,24 +213,21 @@ class Provider extends AbstractProvider
 
             $jwks = json_decode((string) $response->getBody(), true, 512, JSON_THROW_ON_ERROR);
 
-            if (! is_array($jwks) || ! isset($jwks['keys']) || ! is_array($jwks['keys'])) {
-                throw new UnexpectedValueException('Telegram OIDC JWKS response is invalid.');
+            if (!is_array($jwks) || !isset($jwks['keys']) || !is_array($jwks['keys'])) {
+                throw new \UnexpectedValueException('Telegram OIDC JWKS response is invalid.');
             }
 
             return $jwks;
         });
     }
 
-    /**
-     * @param  mixed  $audience
-     */
     private function audienceMatches($audience): bool
     {
         if (is_string($audience)) {
             return hash_equals((string) $this->clientId, $audience);
         }
 
-        if (! is_array($audience)) {
+        if (!is_array($audience)) {
             return false;
         }
 
@@ -270,16 +243,16 @@ class Provider extends AbstractProvider
     /**
      * @return array<string, mixed>
      */
-    private function objectToArray(stdClass $payload): array
+    private function objectToArray(\stdClass $payload): array
     {
         try {
             $claims = json_decode(json_encode($payload, JSON_THROW_ON_ERROR), true, 512, JSON_THROW_ON_ERROR);
-        } catch (JsonException $e) {
-            throw new UnexpectedValueException('Telegram OIDC token claims are invalid.', previous: $e);
+        } catch (\JsonException $e) {
+            throw new \UnexpectedValueException('Telegram OIDC token claims are invalid.', previous: $e);
         }
 
-        if (! is_array($claims)) {
-            throw new UnexpectedValueException('Telegram OIDC token claims are invalid.');
+        if (!is_array($claims)) {
+            throw new \UnexpectedValueException('Telegram OIDC token claims are invalid.');
         }
 
         return $claims;
