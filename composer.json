@@ -1,0 +1,53 @@
+{
+    "name": "barzhahub/socialiteproviders-telegram-oidc",
+    "description": "Telegram OpenID Connect Provider for Laravel Socialite",
+    "type": "library",
+    "license": "MIT",
+    "keywords": [
+        "laravel",
+        "oauth",
+        "oidc",
+        "openid",
+        "provider",
+        "socialite",
+        "telegram"
+    ],
+    "authors": [
+        {
+            "name": "Barzhahub"
+        }
+    ],
+    "support": {
+        "issues": "https://github.com/smotim/socialiteproviders-telegram-oidc/issues",
+        "source": "https://github.com/smotim/socialiteproviders-telegram-oidc"
+    },
+    "require": {
+        "php": "^8.2",
+        "ext-json": "*",
+        "firebase/php-jwt": "^7.0",
+        "socialiteproviders/manager": "^4.9"
+    },
+    "require-dev": {
+        "guzzlehttp/guzzle": "^7.0",
+        "orchestra/testbench": "^9.0 || ^10.0 || ^11.0",
+        "phpunit/phpunit": "^10.5 || ^11.5 || ^12.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "SocialiteProviders\\TelegramOidc\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "SocialiteProviders\\TelegramOidc\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit"
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
