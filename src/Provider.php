@@ -9,7 +9,6 @@ use Firebase\JWT\JWT;
 use GuzzleHttp\RequestOptions;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Str;
 use Laravel\Socialite\Two\InvalidStateException;
 use SocialiteProviders\Manager\OAuth2\AbstractProvider;
 use SocialiteProviders\Manager\OAuth2\User;
@@ -36,24 +35,9 @@ class Provider extends AbstractProvider
 
     protected $scopes = ['openid', 'profile'];
 
-    private string $nonce = '';
-
     public static function additionalConfigKeys(): array
     {
-        return ['scopes'];
-    }
-
-    public function redirect()
-    {
-        $this->nonce = Str::random(40);
-        $this->request->session()->put('oidc_nonce', $this->nonce);
-
-        return parent::redirect();
-    }
-
-    protected function getCodeFields($state = null)
-    {
-        return array_merge(parent::getCodeFields($state), ['nonce' => $this->nonce]);
+        return ['scopes', 'token_url', 'jwks_url'];
     }
 
     public function user()
@@ -113,7 +97,26 @@ class Provider extends AbstractProvider
 
     protected function getTokenUrl()
     {
-        return self::TOKEN_ENDPOINT;
+        $url = $this->getConfig('token_url');
+
+        return is_string($url) && '' !== $url ? $url : self::TOKEN_ENDPOINT;
+    }
+
+    public function getAccessTokenResponse($code)
+    {
+        $response = $this->getHttpClient()->post($this->getTokenUrl(), [
+            RequestOptions::HEADERS => $this->getTokenHeaders($code),
+            RequestOptions::FORM_PARAMS => $this->getTokenFields($code),
+            RequestOptions::HTTP_ERRORS => false,
+        ]);
+
+        $body = json_decode((string) $response->getBody(), true);
+
+        if (!is_array($body)) {
+            throw new \UnexpectedValueException('Telegram OIDC token endpoint returned a non-JSON response.');
+        }
+
+        return $body;
     }
 
     /**
@@ -198,11 +201,6 @@ class Provider extends AbstractProvider
 
         $claims = $this->objectToArray($payload);
 
-        $nonce = $this->request->session()->pull('oidc_nonce');
-        if (!is_string($nonce) || '' === $nonce || !hash_equals($nonce, (string) ($claims['nonce'] ?? ''))) {
-            throw new \UnexpectedValueException('Telegram OIDC nonce mismatch.');
-        }
-
         if (($claims['iss'] ?? null) !== self::ISSUER) {
             throw new \UnexpectedValueException('Telegram OIDC issuer mismatch.');
         }
@@ -232,8 +230,9 @@ class Provider extends AbstractProvider
         }
 
         return Cache::remember(self::JWKS_CACHE_KEY, now()->addHours(6), function () {
-            $response = $this->getHttpClient()->get(self::JWKS_ENDPOINT, [
+            $response = $this->getHttpClient()->get($this->getJwksUrl(), [
                 RequestOptions::HEADERS => ['Accept' => 'application/json'],
+                RequestOptions::HTTP_ERRORS => false,
             ]);
 
             $jwks = json_decode((string) $response->getBody(), true, 512, JSON_THROW_ON_ERROR);
@@ -244,6 +243,13 @@ class Provider extends AbstractProvider
 
             return $jwks;
         });
+    }
+
+    private function getJwksUrl(): string
+    {
+        $url = $this->getConfig('jwks_url');
+
+        return is_string($url) && '' !== $url ? $url : self::JWKS_ENDPOINT;
     }
 
     private function audienceMatches($audience): bool
