@@ -12,7 +12,6 @@ jobs:
       fail-fast: false
       matrix:
         php: ['8.2', '8.3', '8.4']
-        testbench: ['9.*', '10.*', '11.*']
 
     steps:
       - uses: actions/checkout@v4
@@ -22,10 +21,6 @@ jobs:
           php-version: ${{ matrix.php }}
           coverage: none
 
-      - name: Override testbench version
-        run: composer require --dev "orchestra/testbench:${{ matrix.testbench }}" --no-update --no-interaction
-
-      - name: Install dependencies
-        run: composer update --prefer-stable --prefer-dist --no-progress --no-interaction --ansi
+      - uses: ramsey/composer-install@v3
 
       - run: composer test
