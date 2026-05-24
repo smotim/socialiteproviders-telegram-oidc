@@ -36,6 +36,7 @@ class ProviderTest extends TestCase
         $this->assertStringStartsWith('https://oauth.telegram.org/auth?', $target);
         $this->assertStringContainsString('code_challenge=', $target);
         $this->assertStringContainsString('code_challenge_method=S256', $target);
+        $this->assertStringContainsString('nonce=', $target);
 
         parse_str((string) parse_url($target, PHP_URL_QUERY), $query);
 
@@ -53,6 +54,7 @@ class ProviderTest extends TestCase
         ]);
         $request->session()->put('state', 'oidc-state');
         $request->session()->put('code_verifier', 'plain-code-verifier');
+        $request->session()->put('oidc_nonce', 'test-nonce');
 
         [$privateKey, $jwk] = $this->rsaJwk();
         $idToken = JWT::encode([
@@ -62,6 +64,7 @@ class ProviderTest extends TestCase
             'iat' => time(),
             'exp' => time() + 3600,
             'id' => 123456789,
+            'nonce' => 'test-nonce',
             'name' => 'John Doe',
             'preferred_username' => 'johndoe',
             'picture' => 'https://example.com/avatar.jpg',
@@ -104,6 +107,109 @@ class ProviderTest extends TestCase
         $this->assertSame('123456', $tokenFields['client_id']);
         $this->assertSame('plain-code-verifier', $tokenFields['code_verifier']);
         $this->assertArrayNotHasKey('client_secret', $tokenFields);
+    }
+
+    public function testThrowsOnNonceMismatch(): void
+    {
+        $request = $this->requestWithSession([
+            'code' => 'authorization-code',
+            'state' => 'oidc-state',
+        ]);
+        $request->session()->put('state', 'oidc-state');
+        $request->session()->put('code_verifier', 'plain-code-verifier');
+        $request->session()->put('oidc_nonce', 'expected-nonce');
+
+        [$privateKey, $jwk] = $this->rsaJwk();
+        $idToken = JWT::encode([
+            'iss' => 'https://oauth.telegram.org',
+            'aud' => '123456',
+            'sub' => 'some-sub',
+            'iat' => time(),
+            'exp' => time() + 3600,
+            'id' => 42,
+            'nonce' => 'different-nonce',
+        ], $privateKey, 'RS256', 'test-key');
+
+        $provider = $this->provider($request);
+        $provider->setHttpClient($this->httpClient([
+            new Response(200, ['Content-Type' => 'application/json'], json_encode([
+                'access_token' => 'token',
+                'token_type' => 'Bearer',
+                'expires_in' => 3600,
+                'id_token' => $idToken,
+                'scope' => 'openid profile',
+            ], JSON_THROW_ON_ERROR)),
+            new Response(200, ['Content-Type' => 'application/json'], json_encode([
+                'keys' => [$jwk],
+            ], JSON_THROW_ON_ERROR)),
+        ], $history = []));
+
+        $this->expectException(\UnexpectedValueException::class);
+        $this->expectExceptionMessage('Telegram OIDC nonce mismatch.');
+
+        $provider->user();
+    }
+
+    public function testThrowsOnOAuthError(): void
+    {
+        $request = $this->requestWithSession([
+            'error' => 'access_denied',
+            'error_description' => 'The user denied access.',
+        ]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('The user denied access.');
+
+        $this->provider($request)->user();
+    }
+
+    public function testRetriesToFetchJwksOnKeyRotation(): void
+    {
+        $request = $this->requestWithSession([
+            'code' => 'authorization-code',
+            'state' => 'oidc-state',
+        ]);
+        $request->session()->put('state', 'oidc-state');
+        $request->session()->put('code_verifier', 'plain-code-verifier');
+        $request->session()->put('oidc_nonce', 'test-nonce');
+
+        [$privateKey, $jwk] = $this->rsaJwk();
+        $idToken = JWT::encode([
+            'iss' => 'https://oauth.telegram.org',
+            'aud' => '123456',
+            'sub' => 'opaque-subject',
+            'iat' => time(),
+            'exp' => time() + 3600,
+            'id' => 999,
+            'nonce' => 'test-nonce',
+            'name' => 'Retry User',
+        ], $privateKey, 'RS256', 'test-key');
+
+        // Stale JWKS: same key material but wrong kid — JWT::decode will not find 'test-key'.
+        $staleJwk = array_merge($jwk, ['kid' => 'old-key']);
+
+        $history = [];
+        $provider = $this->provider($request);
+        $provider->setHttpClient($this->httpClient([
+            new Response(200, ['Content-Type' => 'application/json'], json_encode([
+                'access_token' => 'token',
+                'token_type' => 'Bearer',
+                'expires_in' => 3600,
+                'id_token' => $idToken,
+                'scope' => 'openid profile',
+            ], JSON_THROW_ON_ERROR)),
+            new Response(200, ['Content-Type' => 'application/json'], json_encode([
+                'keys' => [$staleJwk],
+            ], JSON_THROW_ON_ERROR)),
+            new Response(200, ['Content-Type' => 'application/json'], json_encode([
+                'keys' => [$jwk],
+            ], JSON_THROW_ON_ERROR)),
+        ], $history));
+
+        $user = $provider->user();
+
+        $this->assertSame('999', $user->getId());
+        $this->assertCount(3, $history);
     }
 
     /**

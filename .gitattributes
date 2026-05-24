@@ -3,3 +3,10 @@
 *.json text eol=lf
 *.yml text eol=lf
 *.md text eol=lf
+
+/.github export-ignore
+/.idea export-ignore
+/tests export-ignore
+phpunit.xml.dist export-ignore
+.php-cs-fixer.php export-ignore
+.styleci.yml export-ignore

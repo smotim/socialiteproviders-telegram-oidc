@@ -24,6 +24,7 @@
     "require": {
         "php": "^8.2",
         "ext-json": "*",
+        "ext-openssl": "*",
         "firebase/php-jwt": "^7.0",
         "socialiteproviders/manager": "^4.9"
     },

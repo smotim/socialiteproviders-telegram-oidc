@@ -7,7 +7,7 @@ This package implements Telegram's current OpenID Connect login flow through `ht
 ## Installation
 
 ```bash
-composer require barzhahub/socialiteproviders-telegram-oidc
+composer require socialiteproviders/telegram-oidc
 ```
 
 ## Configuration

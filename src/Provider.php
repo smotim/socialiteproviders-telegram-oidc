@@ -9,6 +9,7 @@ use Firebase\JWT\JWT;
 use GuzzleHttp\RequestOptions;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Str;
 use Laravel\Socialite\Two\InvalidStateException;
 use SocialiteProviders\Manager\OAuth2\AbstractProvider;
 use SocialiteProviders\Manager\OAuth2\User;
@@ -35,9 +36,24 @@ class Provider extends AbstractProvider
 
     protected $scopes = ['openid', 'profile'];
 
+    private string $nonce = '';
+
     public static function additionalConfigKeys(): array
     {
         return ['scopes'];
+    }
+
+    public function redirect()
+    {
+        $this->nonce = Str::random(40);
+        $this->request->session()->put('oidc_nonce', $this->nonce);
+
+        return parent::redirect();
+    }
+
+    protected function getCodeFields($state = null)
+    {
+        return array_merge(parent::getCodeFields($state), ['nonce' => $this->nonce]);
     }
 
     public function user()
@@ -101,18 +117,16 @@ class Provider extends AbstractProvider
     }
 
     /**
-     * Telegram OIDC returns all user claims inside id_token and does not expose a separate
-     * UserInfo endpoint. This method is never reached because user() is fully overridden.
+     * Telegram OIDC does not expose a UserInfo endpoint; all claims come from id_token.
+     * user() is fully overridden and never calls this method.
      *
      * @param string $token
      *
      * @return array<string, mixed>
-     *
-     * @throws \RuntimeException always
      */
     protected function getUserByToken($token): array
     {
-        throw new \RuntimeException('Telegram OIDC does not provide a UserInfo endpoint.');
+        return [];
     }
 
     protected function mapUserToObject(array $user)
@@ -166,21 +180,28 @@ class Provider extends AbstractProvider
             throw new \UnexpectedValueException('Telegram OIDC token response does not contain id_token.');
         }
 
-        $headers = new \stdClass();
         $previousLeeway = JWT::$leeway;
+        // 60 s allows clock skew but also extends the replay window by the same amount.
+        // JWT::$leeway is a global static — unsafe for concurrent runtimes (Swoole / Octane).
         JWT::$leeway = 60;
 
         try {
-            $payload = JWT::decode($idToken, JWK::parseKeySet($this->jwks(), 'RS256'), $headers);
+            try {
+                $payload = JWT::decode($idToken, JWK::parseKeySet($this->jwks(), 'RS256'));
+            } catch (\UnexpectedValueException) {
+                // Signing key may have rotated since last JWKS fetch — retry once with a fresh copy.
+                $payload = JWT::decode($idToken, JWK::parseKeySet($this->jwks(bustCache: true), 'RS256'));
+            }
         } finally {
             JWT::$leeway = $previousLeeway;
         }
 
-        if (($headers->alg ?? null) !== 'RS256') {
-            throw new \UnexpectedValueException('Telegram OIDC token uses an unsupported signing algorithm.');
-        }
-
         $claims = $this->objectToArray($payload);
+
+        $nonce = $this->request->session()->pull('oidc_nonce');
+        if (!is_string($nonce) || '' === $nonce || !hash_equals($nonce, (string) ($claims['nonce'] ?? ''))) {
+            throw new \UnexpectedValueException('Telegram OIDC nonce mismatch.');
+        }
 
         if (($claims['iss'] ?? null) !== self::ISSUER) {
             throw new \UnexpectedValueException('Telegram OIDC issuer mismatch.');
@@ -204,8 +225,12 @@ class Provider extends AbstractProvider
     /**
      * @return array<string, mixed>
      */
-    private function jwks(): array
+    private function jwks(bool $bustCache = false): array
     {
+        if ($bustCache) {
+            Cache::forget(self::JWKS_CACHE_KEY);
+        }
+
         return Cache::remember(self::JWKS_CACHE_KEY, now()->addHours(6), function () {
             $response = $this->getHttpClient()->get(self::JWKS_ENDPOINT, [
                 RequestOptions::HEADERS => ['Accept' => 'application/json'],
