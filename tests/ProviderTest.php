@@ -130,6 +130,7 @@ class ProviderTest extends TestCase
             'nonce' => 'different-nonce',
         ], $privateKey, 'RS256', 'test-key');
 
+        $history = [];
         $provider = $this->provider($request);
         $provider->setHttpClient($this->httpClient([
             new Response(200, ['Content-Type' => 'application/json'], json_encode([
@@ -142,7 +143,7 @@ class ProviderTest extends TestCase
             new Response(200, ['Content-Type' => 'application/json'], json_encode([
                 'keys' => [$jwk],
             ], JSON_THROW_ON_ERROR)),
-        ], $history = []));
+        ], $history));
 
         $this->expectException(\UnexpectedValueException::class);
         $this->expectExceptionMessage('Telegram OIDC nonce mismatch.');
