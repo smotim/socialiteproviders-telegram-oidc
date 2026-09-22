@@ -27,13 +27,18 @@ class Provider extends AbstractProvider
 
     private const JWKS_CACHE_KEY = 'socialite.telegram_oidc.jwks';
 
+    /**
+     * Always requested: `profile` carries the numeric Telegram user id, and `sub` is a different, opaque value.
+     */
+    private const REQUIRED_SCOPES = ['openid', 'profile'];
+
     protected $usesPKCE = true;
 
     protected $scopeSeparator = ' ';
 
     protected $encodingType = PHP_QUERY_RFC3986;
 
-    protected $scopes = ['openid', 'profile'];
+    protected $scopes = self::REQUIRED_SCOPES;
 
     public static function additionalConfigKeys(): array
     {
@@ -68,26 +73,17 @@ class Provider extends AbstractProvider
 
     public function getScopes()
     {
-        $configured = $this->config['scopes'] ?? null;
+        $configured = $this->config['scopes'] ?? [];
 
         if (is_string($configured)) {
-            $scopes = preg_split('/\s+/', trim($configured)) ?: [];
-        } elseif (is_array($configured)) {
-            $scopes = $configured;
-        } else {
-            $scopes = $this->scopes;
+            $configured = preg_split('/\s+/', trim($configured)) ?: [];
         }
 
-        $scopes = array_values(array_unique(array_filter(
-            $scopes,
+        // Required scopes first, then the configured ones, then any added at runtime via scopes().
+        return array_values(array_unique(array_filter(
+            array_merge(self::REQUIRED_SCOPES, (array) $configured, $this->scopes),
             static fn ($scope) => is_string($scope) && '' !== $scope
         )));
-
-        if (!in_array('openid', $scopes, true)) {
-            array_unshift($scopes, 'openid');
-        }
-
-        return $scopes;
     }
 
     protected function getAuthUrl($state)
@@ -113,7 +109,14 @@ class Provider extends AbstractProvider
         $body = json_decode((string) $response->getBody(), true);
 
         if (!is_array($body)) {
-            throw new \UnexpectedValueException('Telegram OIDC token endpoint returned a non-JSON response.');
+            throw new \UnexpectedValueException(sprintf('Telegram OIDC token endpoint returned a non-JSON response (HTTP %d).', $response->getStatusCode()));
+        }
+
+        // HTTP errors are not thrown above, so an OAuth error body ({"error": "invalid_grant", ...}) lands here.
+        if (isset($body['error'])) {
+            $reason = $body['error_description'] ?? $body['error'];
+
+            throw new \RuntimeException('Telegram OIDC token endpoint returned an error: '.(is_string($reason) ? $reason : json_encode($reason)));
         }
 
         return $body;
@@ -134,14 +137,8 @@ class Provider extends AbstractProvider
 
     protected function mapUserToObject(array $user)
     {
-        $providerId = Arr::get($user, 'id', Arr::get($user, 'sub'));
-
-        if (!is_int($providerId) && !is_string($providerId)) {
-            throw new \UnexpectedValueException('Telegram OIDC token does not contain a valid user identifier.');
-        }
-
         return (new User())->setRaw($user)->map([
-            'id' => (string) $providerId,
+            'id' => (string) $user['id'],
             'nickname' => Arr::get($user, 'preferred_username'),
             'name' => Arr::get($user, 'name'),
             'email' => null,
@@ -189,12 +186,16 @@ class Provider extends AbstractProvider
         JWT::$leeway = 60;
 
         try {
-            try {
-                $payload = JWT::decode($idToken, JWK::parseKeySet($this->jwks(), 'RS256'));
-            } catch (\UnexpectedValueException) {
-                // Signing key may have rotated since last JWKS fetch — retry once with a fresh copy.
-                $payload = JWT::decode($idToken, JWK::parseKeySet($this->jwks(bustCache: true), 'RS256'));
+            $jwks = $this->jwks();
+            $kid = $this->keyId($idToken);
+
+            // Refetch only for an unknown kid (the signing key rotated since the last fetch),
+            // not for every invalid token: expired or badly signed ones fail the same either way.
+            if (null !== $kid && !in_array($kid, array_column($jwks['keys'], 'kid'), true)) {
+                $jwks = $this->jwks(bustCache: true);
             }
+
+            $payload = JWT::decode($idToken, JWK::parseKeySet($jwks, 'RS256'));
         } finally {
             JWT::$leeway = $previousLeeway;
         }
@@ -213,8 +214,11 @@ class Provider extends AbstractProvider
             throw new \UnexpectedValueException('Telegram OIDC token does not contain exp.');
         }
 
-        if (empty($claims['sub']) && empty($claims['id'])) {
-            throw new \UnexpectedValueException('Telegram OIDC token does not contain a user identifier.');
+        // Only `id` matches the user id seen by bots and Mini Apps; never fall back to the opaque `sub`.
+        $id = $claims['id'] ?? null;
+
+        if (!is_int($id) && !(is_string($id) && 1 === preg_match('/^\d+$/', $id))) {
+            throw new \UnexpectedValueException('Telegram OIDC token does not contain the numeric user id; the "profile" scope must be granted.');
         }
 
         return $claims;
@@ -243,6 +247,17 @@ class Provider extends AbstractProvider
 
             return $jwks;
         });
+    }
+
+    /**
+     * The `kid` from the JWT header, or null when the header is unreadable — JWT::decode() reports that itself.
+     */
+    private function keyId(string $jwt): ?string
+    {
+        $header = json_decode((string) base64_decode(strtr(explode('.', $jwt)[0], '-_', '+/')), true);
+        $kid = is_array($header) ? ($header['kid'] ?? null) : null;
+
+        return is_string($kid) ? $kid : null;
     }
 
     private function getJwksUrl(): string

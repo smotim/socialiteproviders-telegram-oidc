@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SocialiteProviders\TelegramOidc\Tests;
 
+use Firebase\JWT\ExpiredException;
 use Firebase\JWT\JWT;
 use GuzzleHttp\Client;
 use GuzzleHttp\Handler\MockHandler;
@@ -45,41 +46,32 @@ class ProviderTest extends TestCase
         $this->assertSame('openid profile telegram:bot_access', $query['scope']);
     }
 
+    public function testRedirectAlwaysRequestsProfileScopeAndKeepsRuntimeScopes(): void
+    {
+        $provider = $this->provider($this->requestWithSession(), scopes: 'openid phone');
+        $provider->scopes(['telegram:bot_access']);
+
+        parse_str((string) parse_url($provider->redirect()->getTargetUrl(), PHP_URL_QUERY), $query);
+
+        $this->assertSame('openid profile phone telegram:bot_access', $query['scope']);
+    }
+
     public function testProviderValidatesIdTokenAndMapsNumericTelegramId(): void
     {
-        $request = $this->requestWithSession([
-            'code' => 'authorization-code',
-            'state' => 'oidc-state',
-        ]);
-        $request->session()->put('state', 'oidc-state');
-        $request->session()->put('code_verifier', 'plain-code-verifier');
-
         [$privateKey, $jwk] = $this->rsaJwk();
-        $idToken = JWT::encode([
-            'iss' => 'https://oauth.telegram.org',
-            'aud' => '123456',
+        $idToken = $this->idToken($privateKey, [
             'sub' => 'opaque-telegram-subject',
-            'iat' => time(),
-            'exp' => time() + 3600,
             'id' => 123456789,
             'name' => 'John Doe',
             'preferred_username' => 'johndoe',
             'picture' => 'https://example.com/avatar.jpg',
-        ], $privateKey, 'RS256', 'test-key');
+        ]);
 
         $history = [];
-        $provider = $this->provider($request);
+        $provider = $this->provider($this->callbackRequest());
         $provider->setHttpClient($this->httpClient([
-            new Response(200, ['Content-Type' => 'application/json'], json_encode([
-                'access_token' => 'telegram-access-token',
-                'token_type' => 'Bearer',
-                'expires_in' => 3600,
-                'id_token' => $idToken,
-                'scope' => 'openid profile',
-            ], JSON_THROW_ON_ERROR)),
-            new Response(200, ['Content-Type' => 'application/json'], json_encode([
-                'keys' => [$jwk],
-            ], JSON_THROW_ON_ERROR)),
+            $this->tokenResponse($idToken),
+            $this->jwksResponse($jwk),
         ], $history));
 
         $user = $provider->user();
@@ -106,6 +98,25 @@ class ProviderTest extends TestCase
         $this->assertArrayNotHasKey('client_secret', $tokenFields);
     }
 
+    public function testRejectsTokenWithoutNumericTelegramId(): void
+    {
+        [$privateKey, $jwk] = $this->rsaJwk();
+        // Without the "profile" scope Telegram returns only the opaque sub.
+        $idToken = $this->idToken($privateKey, ['sub' => 'opaque-telegram-subject']);
+
+        $history = [];
+        $provider = $this->provider($this->callbackRequest());
+        $provider->setHttpClient($this->httpClient([
+            $this->tokenResponse($idToken),
+            $this->jwksResponse($jwk),
+        ], $history));
+
+        $this->expectException(\UnexpectedValueException::class);
+        $this->expectExceptionMessage('numeric user id');
+
+        $provider->user();
+    }
+
     public function testThrowsOnOAuthError(): void
     {
         $request = $this->requestWithSession([
@@ -119,51 +130,69 @@ class ProviderTest extends TestCase
         $this->provider($request)->user();
     }
 
+    public function testThrowsTokenEndpointError(): void
+    {
+        $history = [];
+        $provider = $this->provider($this->callbackRequest());
+        $provider->setHttpClient($this->httpClient([
+            new Response(400, ['Content-Type' => 'application/json'], json_encode([
+                'error' => 'invalid_grant',
+                'error_description' => 'Authorization code expired.',
+            ], JSON_THROW_ON_ERROR)),
+        ], $history));
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Authorization code expired.');
+
+        $provider->user();
+    }
+
     public function testRetriesToFetchJwksOnKeyRotation(): void
     {
-        $request = $this->requestWithSession([
-            'code' => 'authorization-code',
-            'state' => 'oidc-state',
-        ]);
-        $request->session()->put('state', 'oidc-state');
-        $request->session()->put('code_verifier', 'plain-code-verifier');
-
         [$privateKey, $jwk] = $this->rsaJwk();
-        $idToken = JWT::encode([
-            'iss' => 'https://oauth.telegram.org',
-            'aud' => '123456',
-            'sub' => 'opaque-subject',
-            'iat' => time(),
-            'exp' => time() + 3600,
-            'id' => 999,
-            'name' => 'Retry User',
-        ], $privateKey, 'RS256', 'test-key');
+        $idToken = $this->idToken($privateKey, ['sub' => 'opaque-subject', 'id' => 999]);
 
         // Stale JWKS: same key material but wrong kid — JWT::decode will not find 'test-key'.
         $staleJwk = array_merge($jwk, ['kid' => 'old-key']);
 
         $history = [];
-        $provider = $this->provider($request);
+        $provider = $this->provider($this->callbackRequest());
         $provider->setHttpClient($this->httpClient([
-            new Response(200, ['Content-Type' => 'application/json'], json_encode([
-                'access_token' => 'token',
-                'token_type' => 'Bearer',
-                'expires_in' => 3600,
-                'id_token' => $idToken,
-                'scope' => 'openid profile',
-            ], JSON_THROW_ON_ERROR)),
-            new Response(200, ['Content-Type' => 'application/json'], json_encode([
-                'keys' => [$staleJwk],
-            ], JSON_THROW_ON_ERROR)),
-            new Response(200, ['Content-Type' => 'application/json'], json_encode([
-                'keys' => [$jwk],
-            ], JSON_THROW_ON_ERROR)),
+            $this->tokenResponse($idToken),
+            $this->jwksResponse($staleJwk),
+            $this->jwksResponse($jwk),
         ], $history));
 
-        $user = $provider->user();
-
-        $this->assertSame('999', $user->getId());
+        $this->assertSame('999', $provider->user()->getId());
         $this->assertCount(3, $history);
+    }
+
+    public function testDoesNotRefetchJwksForExpiredToken(): void
+    {
+        [$privateKey, $jwk] = $this->rsaJwk();
+        $idToken = $this->idToken($privateKey, [
+            'sub' => 'opaque-subject',
+            'id' => 999,
+            'iat' => time() - 7200,
+            'exp' => time() - 3600,
+        ]);
+
+        $history = [];
+        $provider = $this->provider($this->callbackRequest());
+        $provider->setHttpClient($this->httpClient([
+            $this->tokenResponse($idToken),
+            $this->jwksResponse($jwk),
+            $this->jwksResponse($jwk),
+        ], $history));
+
+        try {
+            $provider->user();
+            $this->fail('An expired id_token must be rejected.');
+        } catch (ExpiredException) {
+        }
+
+        // Token exchange + one JWKS fetch: the signing key is known, so the cache stays.
+        $this->assertCount(2, $history);
     }
 
     /**
@@ -173,6 +202,18 @@ class ProviderTest extends TestCase
     {
         $request = Request::create('/auth/telegram/callback', 'GET', $query);
         $request->setLaravelSession(new Store('testing', new ArraySessionHandler(120)));
+
+        return $request;
+    }
+
+    private function callbackRequest(): Request
+    {
+        $request = $this->requestWithSession([
+            'code' => 'authorization-code',
+            'state' => 'oidc-state',
+        ]);
+        $request->session()->put('state', 'oidc-state');
+        $request->session()->put('code_verifier', 'plain-code-verifier');
 
         return $request;
     }
@@ -194,6 +235,40 @@ class ProviderTest extends TestCase
         ));
 
         return $provider;
+    }
+
+    /**
+     * @param array<string, mixed> $claims
+     */
+    private function idToken(string $privateKey, array $claims): string
+    {
+        return JWT::encode(array_merge([
+            'iss' => 'https://oauth.telegram.org',
+            'aud' => '123456',
+            'iat' => time(),
+            'exp' => time() + 3600,
+        ], $claims), $privateKey, 'RS256', 'test-key');
+    }
+
+    private function tokenResponse(string $idToken): Response
+    {
+        return new Response(200, ['Content-Type' => 'application/json'], json_encode([
+            'access_token' => 'telegram-access-token',
+            'token_type' => 'Bearer',
+            'expires_in' => 3600,
+            'id_token' => $idToken,
+            'scope' => 'openid profile',
+        ], JSON_THROW_ON_ERROR));
+    }
+
+    /**
+     * @param array<string, string> $jwk
+     */
+    private function jwksResponse(array $jwk): Response
+    {
+        return new Response(200, ['Content-Type' => 'application/json'], json_encode([
+            'keys' => [$jwk],
+        ], JSON_THROW_ON_ERROR));
     }
 
     /**
