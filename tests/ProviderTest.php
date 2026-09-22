@@ -7,6 +7,7 @@ namespace SocialiteProviders\TelegramOidc\Tests;
 use Firebase\JWT\ExpiredException;
 use Firebase\JWT\JWT;
 use GuzzleHttp\Client;
+use GuzzleHttp\Exception\ClientException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
@@ -59,8 +60,6 @@ class ProviderTest extends TestCase
     public function testConfiguredScopesPassedToScopesBySocialiteAreNotDuplicated(): void
     {
         $provider = $this->provider($this->requestWithSession(), scopes: 'openid profile telegram:bot_access');
-        // SocialiteManager::buildProvider() does this with the raw config value.
-        $provider->scopes('openid profile telegram:bot_access');
 
         parse_str((string) parse_url($provider->redirect()->getTargetUrl(), PHP_URL_QUERY), $query);
 
@@ -128,6 +127,24 @@ class ProviderTest extends TestCase
         $provider->user();
     }
 
+    public function testRejectsTokenIssuedForAnotherBot(): void
+    {
+        [$privateKey, $jwk] = $this->rsaJwk();
+        $idToken = $this->idToken($privateKey, ['aud' => ['999999'], 'sub' => 'opaque-subject', 'id' => 999]);
+
+        $history = [];
+        $provider = $this->provider($this->callbackRequest());
+        $provider->setHttpClient($this->httpClient([
+            $this->tokenResponse($idToken),
+            $this->jwksResponse($jwk),
+        ], $history));
+
+        $this->expectException(\UnexpectedValueException::class);
+        $this->expectExceptionMessage('audience mismatch');
+
+        $provider->user();
+    }
+
     public function testThrowsOnOAuthError(): void
     {
         $request = $this->requestWithSession([
@@ -152,7 +169,7 @@ class ProviderTest extends TestCase
             ], JSON_THROW_ON_ERROR)),
         ], $history));
 
-        $this->expectException(\RuntimeException::class);
+        $this->expectException(ClientException::class);
         $this->expectExceptionMessage('Authorization code expired.');
 
         $provider->user();
@@ -229,6 +246,9 @@ class ProviderTest extends TestCase
         return $request;
     }
 
+    /**
+     * Built the way SocialiteManager::buildProvider() and the Manager do it: raw config scopes go to scopes().
+     */
     private function provider(Request $request, string $scopes = 'openid profile'): Provider
     {
         $provider = new Provider(
@@ -238,6 +258,7 @@ class ProviderTest extends TestCase
             'https://example.com/auth/telegram/callback'
         );
 
+        $provider->scopes($scopes);
         $provider->setConfig(new Config(
             '123456',
             'client-secret',

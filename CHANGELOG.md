@@ -4,7 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-## [0.4.1] - 2026-09-22
+## [0.4.2] - 2026-09-22
+
+### Changed
+
+- Scopes have a single source: `SocialiteManager` already passes the configured ones to `scopes()`, so the provider only splits them and adds `openid` and `profile`.
+- HTTP errors from the token and JWKS endpoints are raised by Guzzle again, with the status and response body in the message, instead of being switched off and parsed by hand. This replaces the token error handling added in 0.4.0.
+- The token request reuses Socialite's fields minus `client_secret`; a lost PKCE verifier is already caught by the state check.
 
 ### Fixed
 

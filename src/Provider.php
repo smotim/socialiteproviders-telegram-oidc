@@ -71,19 +71,21 @@ class Provider extends AbstractProvider
             ->setApprovedScopes($this->parseApprovedScopes($response));
     }
 
+    /**
+     * SocialiteManager::buildProvider() passes the configured `scopes` to scopes() as-is,
+     * so "openid profile" may arrive as one element: split every entry.
+     */
     public function getScopes()
     {
-        // Required scopes first, then the configured ones, then any added at runtime via scopes().
-        $scopes = array_merge(self::REQUIRED_SCOPES, (array) ($this->config['scopes'] ?? []), $this->scopes);
-
-        // SocialiteManager::buildProvider() also passes the configured scopes to scopes() as-is,
-        // so "openid profile" arrives as one element: split every entry before de-duplicating.
         $scopes = array_merge(...array_map(
-            static fn ($scope) => is_string($scope) ? (preg_split('/\s+/', trim($scope)) ?: []) : [],
-            $scopes
+            static fn ($scope) => preg_split('/\s+/', trim((string) $scope)) ?: [],
+            $this->scopes
         ));
 
-        return array_values(array_unique(array_filter($scopes, static fn (string $scope) => '' !== $scope)));
+        return array_values(array_unique(array_filter(
+            array_merge(self::REQUIRED_SCOPES, $scopes),
+            static fn (string $scope) => '' !== $scope
+        )));
     }
 
     protected function getAuthUrl($state)
@@ -93,33 +95,7 @@ class Provider extends AbstractProvider
 
     protected function getTokenUrl()
     {
-        $url = $this->getConfig('token_url');
-
-        return is_string($url) && '' !== $url ? $url : self::TOKEN_ENDPOINT;
-    }
-
-    public function getAccessTokenResponse($code)
-    {
-        $response = $this->getHttpClient()->post($this->getTokenUrl(), [
-            RequestOptions::HEADERS => $this->getTokenHeaders($code),
-            RequestOptions::FORM_PARAMS => $this->getTokenFields($code),
-            RequestOptions::HTTP_ERRORS => false,
-        ]);
-
-        $body = json_decode((string) $response->getBody(), true);
-
-        if (!is_array($body)) {
-            throw new \UnexpectedValueException(sprintf('Telegram OIDC token endpoint returned a non-JSON response (HTTP %d).', $response->getStatusCode()));
-        }
-
-        // HTTP errors are not thrown above, so an OAuth error body ({"error": "invalid_grant", ...}) lands here.
-        if (isset($body['error'])) {
-            $reason = $body['error_description'] ?? $body['error'];
-
-            throw new \RuntimeException('Telegram OIDC token endpoint returned an error: '.(is_string($reason) ? $reason : json_encode($reason)));
-        }
-
-        return $body;
+        return $this->getConfig('token_url') ?: self::TOKEN_ENDPOINT;
     }
 
     /**
@@ -154,21 +130,12 @@ class Provider extends AbstractProvider
         ];
     }
 
+    /**
+     * The client authenticates with Basic auth (see getTokenHeaders()); OAuth 2.0 forbids sending the secret twice.
+     */
     protected function getTokenFields($code)
     {
-        $codeVerifier = $this->request->session()->pull('code_verifier');
-
-        if (!is_string($codeVerifier) || '' === $codeVerifier) {
-            throw new InvalidStateException();
-        }
-
-        return [
-            'grant_type' => 'authorization_code',
-            'code' => $code,
-            'redirect_uri' => $this->redirectUrl,
-            'client_id' => $this->clientId,
-            'code_verifier' => $codeVerifier,
-        ];
+        return Arr::except(parent::getTokenFields($code), 'client_secret');
     }
 
     /**
@@ -200,13 +167,13 @@ class Provider extends AbstractProvider
             JWT::$leeway = $previousLeeway;
         }
 
-        $claims = $this->objectToArray($payload);
+        $claims = json_decode(json_encode($payload, JSON_THROW_ON_ERROR), true, 512, JSON_THROW_ON_ERROR);
 
         if (($claims['iss'] ?? null) !== self::ISSUER) {
             throw new \UnexpectedValueException('Telegram OIDC issuer mismatch.');
         }
 
-        if (!$this->audienceMatches($claims['aud'] ?? null)) {
+        if (!in_array((string) $this->clientId, (array) ($claims['aud'] ?? []), true)) {
             throw new \UnexpectedValueException('Telegram OIDC audience mismatch.');
         }
 
@@ -234,9 +201,8 @@ class Provider extends AbstractProvider
         }
 
         return Cache::remember(self::JWKS_CACHE_KEY, now()->addHours(6), function () {
-            $response = $this->getHttpClient()->get($this->getJwksUrl(), [
+            $response = $this->getHttpClient()->get($this->getConfig('jwks_url') ?: self::JWKS_ENDPOINT, [
                 RequestOptions::HEADERS => ['Accept' => 'application/json'],
-                RequestOptions::HTTP_ERRORS => false,
             ]);
 
             $jwks = json_decode((string) $response->getBody(), true, 512, JSON_THROW_ON_ERROR);
@@ -260,47 +226,4 @@ class Provider extends AbstractProvider
         return is_string($kid) ? $kid : null;
     }
 
-    private function getJwksUrl(): string
-    {
-        $url = $this->getConfig('jwks_url');
-
-        return is_string($url) && '' !== $url ? $url : self::JWKS_ENDPOINT;
-    }
-
-    private function audienceMatches($audience): bool
-    {
-        if (is_string($audience)) {
-            return hash_equals((string) $this->clientId, $audience);
-        }
-
-        if (!is_array($audience)) {
-            return false;
-        }
-
-        foreach ($audience as $value) {
-            if (is_string($value) && hash_equals((string) $this->clientId, $value)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private function objectToArray(\stdClass $payload): array
-    {
-        try {
-            $claims = json_decode(json_encode($payload, JSON_THROW_ON_ERROR), true, 512, JSON_THROW_ON_ERROR);
-        } catch (\JsonException $e) {
-            throw new \UnexpectedValueException('Telegram OIDC token claims are invalid.', previous: $e);
-        }
-
-        if (!is_array($claims)) {
-            throw new \UnexpectedValueException('Telegram OIDC token claims are invalid.');
-        }
-
-        return $claims;
-    }
 }
