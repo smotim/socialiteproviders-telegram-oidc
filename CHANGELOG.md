@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-22
+
+### Fixed
+
+- Scopes were sent twice when configured as a string (`openid profile openid profile`): `SocialiteManager::buildProvider()` passes the raw config value to `scopes()`, and 0.4.0 merged it with the parsed config.
+
 ## [0.4.0] - 2026-09-22
 
 ### Changed

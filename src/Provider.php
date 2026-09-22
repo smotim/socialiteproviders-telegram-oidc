@@ -73,17 +73,17 @@ class Provider extends AbstractProvider
 
     public function getScopes()
     {
-        $configured = $this->config['scopes'] ?? [];
-
-        if (is_string($configured)) {
-            $configured = preg_split('/\s+/', trim($configured)) ?: [];
-        }
-
         // Required scopes first, then the configured ones, then any added at runtime via scopes().
-        return array_values(array_unique(array_filter(
-            array_merge(self::REQUIRED_SCOPES, (array) $configured, $this->scopes),
-            static fn ($scope) => is_string($scope) && '' !== $scope
-        )));
+        $scopes = array_merge(self::REQUIRED_SCOPES, (array) ($this->config['scopes'] ?? []), $this->scopes);
+
+        // SocialiteManager::buildProvider() also passes the configured scopes to scopes() as-is,
+        // so "openid profile" arrives as one element: split every entry before de-duplicating.
+        $scopes = array_merge(...array_map(
+            static fn ($scope) => is_string($scope) ? (preg_split('/\s+/', trim($scope)) ?: []) : [],
+            $scopes
+        ));
+
+        return array_values(array_unique(array_filter($scopes, static fn (string $scope) => '' !== $scope)));
     }
 
     protected function getAuthUrl($state)

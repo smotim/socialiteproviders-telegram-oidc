@@ -56,6 +56,17 @@ class ProviderTest extends TestCase
         $this->assertSame('openid profile phone telegram:bot_access', $query['scope']);
     }
 
+    public function testConfiguredScopesPassedToScopesBySocialiteAreNotDuplicated(): void
+    {
+        $provider = $this->provider($this->requestWithSession(), scopes: 'openid profile telegram:bot_access');
+        // SocialiteManager::buildProvider() does this with the raw config value.
+        $provider->scopes('openid profile telegram:bot_access');
+
+        parse_str((string) parse_url($provider->redirect()->getTargetUrl(), PHP_URL_QUERY), $query);
+
+        $this->assertSame('openid profile telegram:bot_access', $query['scope']);
+    }
+
     public function testProviderValidatesIdTokenAndMapsNumericTelegramId(): void
     {
         [$privateKey, $jwk] = $this->rsaJwk();
