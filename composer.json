@@ -30,7 +30,7 @@
     "require-dev": {
         "guzzlehttp/guzzle": "^7.16.1 || ^8.0",
         "orchestra/testbench": "^9.0 || ^10.0 || ^11.0",
-        "phpunit/phpunit": "^10.5 || ^11.5 || ^12.0"
+        "phpunit/phpunit": "^10.5 || ^11.5 || ^12.0 || ^13.0"
     },
     "autoload": {
         "psr-4": {
