@@ -28,7 +28,7 @@
         "socialiteproviders/manager": "^4.9"
     },
     "require-dev": {
-        "guzzlehttp/guzzle": "^7.0",
+        "guzzlehttp/guzzle": "^7.16.1",
         "orchestra/testbench": "^9.0 || ^10.0 || ^11.0",
         "phpunit/phpunit": "^10.5 || ^11.5 || ^12.0"
     },
